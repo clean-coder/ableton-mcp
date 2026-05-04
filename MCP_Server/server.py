@@ -105,7 +105,8 @@ class AbletonConnection:
             "create_midi_track", "create_audio_track", "set_track_name",
             "create_clip", "add_notes_to_clip", "set_clip_name",
             "set_tempo", "fire_clip", "stop_clip", "set_device_parameter",
-            "start_playback", "stop_playback", "load_instrument_or_effect"
+            "start_playback", "stop_playback", "load_instrument_or_effect",
+            "create_stems",
         ]
         
         try:
@@ -650,6 +651,63 @@ def load_drum_kit(ctx: Context, track_index: int, rack_uri: str, kit_path: str) 
     except Exception as e:
         logger.error(f"Error loading drum kit: {str(e)}")
         return f"Error loading drum kit: {str(e)}"
+
+@mcp.tool()
+def create_stems(
+    ctx: Context,
+    scene_index: int = 0,
+    bars: int = 8,
+    track_indices: List[int] = None,
+) -> str:
+    """
+    Create stems from Session View tracks by recording each track's output into a new audio track.
+
+    For every source track that has a clip in `scene_index`, a new audio track is created,
+    routed from that source's post-FX output, armed, and recorded simultaneously.
+    Recording stops automatically after `bars` bars (default: 8).
+
+    After calling this tool, use get_stems_status to check progress.
+    Completed stems appear as new audio tracks named "<OriginalTrack> Stem".
+
+    Parameters:
+    - scene_index: Row in the Session View to play from (0 = first scene, default: 0)
+    - bars: Recording length in bars (default: 8)
+    - track_indices: Tracks to stem; omit to stem all tracks that have a clip in the scene
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("create_stems", {
+            "scene_index": scene_index,
+            "bars": bars,
+            "track_indices": track_indices or [],
+        })
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error creating stems: {str(e)}")
+        return f"Error creating stems: {str(e)}"
+
+
+@mcp.tool()
+def get_stems_status(ctx: Context) -> str:
+    """
+    Get the status of the most recent create_stems call.
+
+    Poll this after create_stems to know when recording has finished.
+
+    Returned status values:
+    - "idle"      — no stem recording has been started yet
+    - "recording" — currently recording (check duration_seconds for when it will finish)
+    - "completed" — all stems recorded; each stem entry includes stem_track_name and file_path
+    - "error"     — something went wrong; see the error field for details
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("get_stems_status")
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error getting stems status: {str(e)}")
+        return f"Error getting stems status: {str(e)}"
+
 
 # Main execution
 def main():
