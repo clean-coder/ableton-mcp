@@ -814,9 +814,9 @@ class AbletonMCP(ControlSurface):
 
     def _create_stems(self, scene_index, bars, track_indices):
         """
-        Record Session View stems: creates one audio track per source track, routes each
-        from the source's post-FX output, arms them, fires the scene, and stops automatically
-        after `bars` bars. Non-blocking — returns immediately; poll get_stems_status for completion.
+        Record Session View stems sequentially: for each source track, mutes all others,
+        records the stem audio track via Resampling, then advances to the next.
+        Non-blocking — returns immediately; poll get_stems_status for completion.
         """
         song = self._song
 
@@ -839,60 +839,28 @@ class AbletonMCP(ControlSurface):
                 "No clips found in scene {0}. Add clips to the scene first.".format(scene_index)
             )
 
-        # Save arm state so we can restore it after recording
+        # Save original arm and mute states so we can restore them after recording
         original_arms = {i: t.arm for i, t in enumerate(song.tracks) if hasattr(t, "arm")}
+        original_mutes = {i: t.mute for i, t in enumerate(song.tracks) if hasattr(t, "mute")}
 
         stem_info = []
 
+        # Create all stem audio tracks upfront (before recording starts)
         for source_idx in track_indices:
             source_track = song.tracks[source_idx]
-
-            # Create a new audio track at the end to capture this stem
             song.create_audio_track(-1)
             audio_idx = len(song.tracks) - 1
             audio_track = song.tracks[audio_idx]
             audio_track.name = source_track.name + " Stem"
-
-            # Route audio track input from the source track (Post FX)
-            routing_set = False
-            routing_used = ""
-            available_routings = []
-            try:
-                available_routings = list(audio_track.input_routings)
-                for r in available_routings:
-                    if source_track.name in r:
-                        audio_track.current_input_routing = r
-                        routing_used = r
-                        routing_set = True
-                        break
-                if routing_set:
-                    try:
-                        for sub in audio_track.input_sub_routings:
-                            if "Post" in sub:
-                                audio_track.current_input_sub_routing = sub
-                                break
-                    except Exception:
-                        pass
-            except Exception as e:
-                self.log_message("Routing error for '{0}': {1}".format(source_track.name, str(e)))
-
-            # Monitor input (not clip playback) so the source audio passes through
-            try:
-                audio_track.current_monitoring_state = 1  # 1 = In
-            except Exception:
-                pass
-
-            audio_track.arm = True
-
             stem_info.append({
                 "source_track_index": source_idx,
                 "source_track_name": source_track.name,
                 "stem_track_index": audio_idx,
                 "stem_track_name": audio_track.name,
-                "routing_set": routing_set,
-                "routing_used": routing_used,
-                "status": "recording",
+                "status": "pending",
             })
+
+        total_duration = duration_seconds * len(stem_info)
 
         self._stems_state = {
             "status": "recording",
@@ -901,58 +869,136 @@ class AbletonMCP(ControlSurface):
             "duration_seconds": duration_seconds,
             "stems": stem_info,
             "total": len(stem_info),
+            "current_stem_index": 0,
             "original_arms": original_arms,
+            "original_mutes": original_mutes,
             "error": None,
         }
 
-        # Fire the source clips and start session recording on the armed audio tracks.
-        # Firing an empty slot on an armed audio track begins clip recording.
-        for source_idx in track_indices:
-            song.tracks[source_idx].clip_slots[scene_index].fire()
-
-        for info in stem_info:
-            audio_track = song.tracks[info["stem_track_index"]]
-            # Record into the first empty slot (slot 0 on a brand-new track)
-            for slot_i, slot in enumerate(audio_track.clip_slots):
-                if not slot.has_clip:
-                    slot.fire()
-                    info["record_slot_index"] = slot_i
-                    break
-
-        # Background thread: sleep for the stem duration, then stop everything on the main thread
-        def _stop_after_delay():
-            time.sleep(duration_seconds + 0.5)
-            try:
-                self.schedule_message(0, self._finish_stem_recording)
-            except Exception as e:
-                self.log_message("Error scheduling stem stop: " + str(e))
-
-        stop_thread = threading.Thread(target=_stop_after_delay)
-        stop_thread.daemon = True
-        stop_thread.start()
+        # Begin recording the first stem (runs on the main thread)
+        self._start_recording_stem(0)
 
         return {
             "status": "recording_started",
             "stems": stem_info,
             "bars": bars,
-            "duration_seconds": duration_seconds,
+            "duration_seconds": total_duration,
             "message": (
-                "Recording {0} stem(s). "
+                "Recording {0} stem(s) sequentially (one at a time for clean isolation). "
                 "Call get_stems_status after ~{1:.0f}s to confirm completion. "
                 "Stems will appear as new audio tracks named '<Track> Stem'."
-            ).format(len(stem_info), duration_seconds + 1),
+            ).format(len(stem_info), total_duration + len(stem_info)),
         }
 
+    def _start_recording_stem(self, stem_index):
+        """Mute all other source tracks, arm the stem track, and start recording. Main thread."""
+        state = self._stems_state
+        stems = state.get("stems", [])
+
+        if stem_index >= len(stems):
+            self._finish_stem_recording()
+            return
+
+        info = stems[stem_index]
+        song = self._song
+        scene_index = state["scene_index"]
+        duration_seconds = state["duration_seconds"]
+
+        source_idx = info["source_track_index"]
+        audio_idx = info["stem_track_index"]
+        all_source_indices = [s["source_track_index"] for s in stems]
+
+        # Isolate this source track: mute every other source track
+        for idx in all_source_indices:
+            song.tracks[idx].mute = (idx != source_idx)
+
+        # Set up stem audio track: Resampling captures the master output (only unmuted track)
+        audio_track = song.tracks[audio_idx]
+        try:
+            for r in audio_track.input_routings:
+                if "Resamp" in r:
+                    audio_track.current_input_routing = r
+                    break
+        except Exception:
+            pass
+        try:
+            audio_track.current_monitoring_state = 1  # In
+        except Exception:
+            pass
+        audio_track.arm = True
+
+        info["status"] = "recording"
+        state["current_stem_index"] = stem_index
+
+        # Fire the source clip
+        song.tracks[source_idx].clip_slots[scene_index].fire()
+
+        # Start recording on the first empty slot of the stem audio track
+        for slot_i, slot in enumerate(audio_track.clip_slots):
+            if not slot.has_clip:
+                slot.fire()
+                info["record_slot_index"] = slot_i
+                break
+
+        # Background thread: wait for the stem duration, then stop and advance
+        def _advance_after_delay():
+            time.sleep(duration_seconds + 0.5)
+            try:
+                self.schedule_message(0, lambda: self._stop_stem_and_advance(stem_index))
+            except Exception as e:
+                self.log_message("Error scheduling stem advance: " + str(e))
+
+        t = threading.Thread(target=_advance_after_delay)
+        t.daemon = True
+        t.start()
+
+    def _stop_stem_and_advance(self, stem_index):
+        """Stop the current stem's recording and start the next one. Main thread."""
+        try:
+            state = self._stems_state
+            stems = state.get("stems", [])
+            song = self._song
+
+            if stem_index < len(stems):
+                info = stems[stem_index]
+                audio_idx = info.get("stem_track_index")
+                rec_slot = info.get("record_slot_index", 0)
+                source_idx = info["source_track_index"]
+                scene_index = state["scene_index"]
+
+                # Stop recording and disarm the stem audio track
+                if audio_idx is not None and audio_idx < len(song.tracks):
+                    audio_track = song.tracks[audio_idx]
+                    audio_track.arm = False
+                    if rec_slot < len(audio_track.clip_slots):
+                        slot = audio_track.clip_slots[rec_slot]
+                        if slot.has_clip:
+                            slot.clip.stop()
+
+                # Stop the source clip
+                if source_idx < len(song.tracks):
+                    source_slot = song.tracks[source_idx].clip_slots[scene_index]
+                    if source_slot.has_clip:
+                        source_slot.clip.stop()
+
+            # Advance to the next stem
+            self._start_recording_stem(stem_index + 1)
+
+        except Exception as e:
+            self.log_message("Error stopping stem {0}: {1}".format(stem_index, str(e)))
+            self.log_message(traceback.format_exc())
+            self._stems_state["status"] = "error"
+            self._stems_state["error"] = str(e)
+
     def _finish_stem_recording(self):
-        """Runs on Ableton's main thread after the stem duration. Stops clips and collects results."""
+        """Collect results and restore all saved states. Main thread."""
         try:
             song = self._song
             state = self._stems_state
 
-            # Stop all clips (source and recording)
             song.stop_all_clips()
 
-            # Disarm recording tracks and collect clip file paths
+            # Collect clip file paths for each recorded stem
             for info in state.get("stems", []):
                 stem_idx = info.get("stem_track_index")
                 rec_slot = info.get("record_slot_index", 0)
@@ -978,6 +1024,14 @@ class AbletonMCP(ControlSurface):
                                 pass
                         else:
                             info["status"] = "no_clip_recorded"
+
+            # Restore original mute states
+            for i, mute in state.get("original_mutes", {}).items():
+                if i < len(song.tracks):
+                    try:
+                        song.tracks[i].mute = mute
+                    except Exception:
+                        pass
 
             # Restore original arm states
             for i, arm in state.get("original_arms", {}).items():
@@ -1005,6 +1059,7 @@ class AbletonMCP(ControlSurface):
             "bars": state.get("bars", 0),
             "duration_seconds": state.get("duration_seconds", 0),
             "total": state.get("total", 0),
+            "current_stem_index": state.get("current_stem_index", 0),
             "stems": state.get("stems", []),
             "error": state.get("error"),
         }
