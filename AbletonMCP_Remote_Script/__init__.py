@@ -290,7 +290,8 @@ class AbletonMCP(ControlSurface):
                             scene_index = params.get("scene_index", 0)
                             bars = params.get("bars", 8)
                             track_indices = params.get("track_indices", [])
-                            result = self._create_stems(scene_index, bars, track_indices)
+                            cleanup_tracks = params.get("cleanup_tracks", True)
+                            result = self._create_stems(scene_index, bars, track_indices, cleanup_tracks)
 
                         # Put the result in the queue
                         response_queue.put({"status": "success", "result": result})
@@ -812,11 +813,15 @@ class AbletonMCP(ControlSurface):
     
     # Stem recording
 
-    def _create_stems(self, scene_index, bars, track_indices):
+    def _create_stems(self, scene_index, bars, track_indices, cleanup_tracks=True):
         """
         Record Session View stems sequentially: for each source track, mutes all others,
         records the stem audio track via Resampling, then advances to the next.
         Non-blocking — returns immediately; poll get_stems_status for completion.
+
+        If cleanup_tracks is True (default), the temporary stem audio tracks are removed
+        after recording finishes; the .wav files on disk persist and are reachable via
+        each stem's file_path field.
         """
         song = self._song
 
@@ -872,6 +877,7 @@ class AbletonMCP(ControlSurface):
             "current_stem_index": 0,
             "original_arms": original_arms,
             "original_mutes": original_mutes,
+            "cleanup_tracks": cleanup_tracks,
             "error": None,
         }
 
@@ -1040,6 +1046,25 @@ class AbletonMCP(ControlSurface):
                         song.tracks[i].arm = arm
                     except Exception:
                         pass
+
+            # Delete the temporary stem tracks if requested. The .wav files on disk persist;
+            # each stem's file_path was captured above. Delete in descending index order so
+            # earlier indices remain valid as the track list shrinks.
+            if state.get("cleanup_tracks", True):
+                stem_indices = sorted(
+                    (info.get("stem_track_index") for info in state.get("stems", [])
+                     if info.get("stem_track_index") is not None),
+                    reverse=True,
+                )
+                for idx in stem_indices:
+                    if idx < len(song.tracks):
+                        try:
+                            song.delete_track(idx)
+                        except Exception as e:
+                            self.log_message("Could not delete stem track {0}: {1}".format(idx, str(e)))
+                # The track no longer exists in the Live set; drop the now-stale index.
+                for info in state.get("stems", []):
+                    info["stem_track_index"] = None
 
             state["status"] = "completed"
             self.show_message("AbletonMCP: Stem recording complete!")

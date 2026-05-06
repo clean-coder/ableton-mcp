@@ -658,21 +658,26 @@ def create_stems(
     scene_index: int = 0,
     bars: int = 8,
     track_indices: List[int] = None,
+    cleanup_tracks: bool = True,
 ) -> str:
     """
     Create stems from Session View tracks by recording each track's output into a new audio track.
 
-    For every source track that has a clip in `scene_index`, a new audio track is created,
-    routed from that source's post-FX output, armed, and recorded simultaneously.
+    For every source track that has a clip in `scene_index`, a temporary audio track is created,
+    routed from that source's post-FX output, armed, and recorded sequentially.
     Recording stops automatically after `bars` bars (default: 8).
 
     After calling this tool, use get_stems_status to check progress.
-    Completed stems appear as new audio tracks named "<OriginalTrack> Stem".
+
+    By default, the temporary stem tracks are deleted from the Live set after recording finishes;
+    the recorded .wav files remain on disk and their paths are returned via get_stems_status.
+    Set cleanup_tracks=False to keep the stem tracks in the Live set instead.
 
     Parameters:
     - scene_index: Row in the Session View to play from (0 = first scene, default: 0)
     - bars: Recording length in bars (default: 8)
     - track_indices: Tracks to stem; omit to stem all tracks that have a clip in the scene
+    - cleanup_tracks: If True (default), delete stem tracks after recording; .wav files persist on disk
     """
     try:
         ableton = get_ableton_connection()
@@ -680,6 +685,7 @@ def create_stems(
             "scene_index": scene_index,
             "bars": bars,
             "track_indices": track_indices or [],
+            "cleanup_tracks": cleanup_tracks,
         })
         return json.dumps(result, indent=2)
     except Exception as e:
@@ -697,7 +703,10 @@ def get_stems_status(ctx: Context) -> str:
     Returned status values:
     - "idle"      — no stem recording has been started yet
     - "recording" — currently recording (check duration_seconds for when it will finish)
-    - "completed" — all stems recorded; each stem entry includes stem_track_name and file_path
+    - "completed" — all stems recorded; each stem entry includes stem_track_name and file_path.
+                    If create_stems was called with cleanup_tracks=True (default), the stem
+                    tracks have been removed from the Live set but the .wav files at file_path
+                    persist on disk.
     - "error"     — something went wrong; see the error field for details
     """
     try:
