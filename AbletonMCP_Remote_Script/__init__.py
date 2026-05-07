@@ -389,7 +389,8 @@ class AbletonMCP(ControlSurface):
                         "name": clip.name,
                         "length": clip.length,
                         "is_playing": clip.is_playing,
-                        "is_recording": clip.is_recording
+                        "is_recording": clip.is_recording,
+                        "muted": clip.muted
                     }
                 
                 clip_slots.append({
@@ -850,16 +851,26 @@ class AbletonMCP(ControlSurface):
 
         stem_info = []
 
-        # Create all stem audio tracks upfront (before recording starts)
+        # Create all stem audio tracks upfront (before recording starts).
+        # The audio track name becomes the recorded .wav filename, so use the
+        # source clip name (falling back to the track name if the clip is
+        # unnamed or missing).
         for source_idx in track_indices:
             source_track = song.tracks[source_idx]
+            source_clip_name = None
+            if scene_index < len(source_track.clip_slots):
+                slot = source_track.clip_slots[scene_index]
+                if slot.has_clip:
+                    source_clip_name = slot.clip.name
+            stem_name = source_clip_name if source_clip_name else source_track.name
             song.create_audio_track(-1)
             audio_idx = len(song.tracks) - 1
             audio_track = song.tracks[audio_idx]
-            audio_track.name = source_track.name + " Stem"
+            audio_track.name = stem_name
             stem_info.append({
                 "source_track_index": source_idx,
                 "source_track_name": source_track.name,
+                "source_clip_name": source_clip_name,
                 "stem_track_index": audio_idx,
                 "stem_track_name": audio_track.name,
                 "status": "pending",
@@ -892,7 +903,7 @@ class AbletonMCP(ControlSurface):
             "message": (
                 "Recording {0} stem(s) sequentially (one at a time for clean isolation). "
                 "Call get_stems_status after ~{1:.0f}s to confirm completion. "
-                "Stems will appear as new audio tracks named '<Track> Stem'."
+                "Stems will appear as new audio tracks named after the source clip."
             ).format(len(stem_info), total_duration + len(stem_info)),
         }
 
@@ -912,11 +923,22 @@ class AbletonMCP(ControlSurface):
 
         source_idx = info["source_track_index"]
         audio_idx = info["stem_track_index"]
-        all_source_indices = [s["source_track_index"] for s in stems]
+        stem_track_indices = set(
+            s["stem_track_index"] for s in stems
+            if s.get("stem_track_index") is not None
+        )
 
-        # Isolate this source track: mute every other source track
-        for idx in all_source_indices:
-            song.tracks[idx].mute = (idx != source_idx)
+        # Isolate this source: mute every regular track in the song except the
+        # current source. Skip the temp stem audio tracks themselves so their
+        # state isn't disturbed mid-recording. Original mute states are saved
+        # in original_mutes and restored when recording finishes.
+        for idx in range(len(song.tracks)):
+            if idx in stem_track_indices:
+                continue
+            try:
+                song.tracks[idx].mute = (idx != source_idx)
+            except Exception:
+                pass
 
         # Set up stem audio track: Resampling captures the master output (only unmuted track)
         audio_track = song.tracks[audio_idx]
