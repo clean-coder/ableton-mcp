@@ -270,6 +270,17 @@ def get_session_info(ctx: Context) -> str:
         return f"Error getting session info: {str(e)}"
 
 @mcp.tool()
+def get_song_file_path(ctx: Context) -> str:
+    """Get the full file path of the current Ableton Live set (.als file). Returns an empty string if the song has never been saved."""
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("get_song_file_path")
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error getting song file path: {str(e)}")
+        return f"Error getting song file path: {str(e)}"
+
+@mcp.tool()
 def get_track_info(ctx: Context, track_index: int) -> str:
     """
     Get detailed information about a specific track in Ableton.

@@ -225,6 +225,8 @@ class AbletonMCP(ControlSurface):
             # Route the command to the appropriate handler
             if command_type == "get_session_info":
                 response["result"] = self._get_session_info()
+            elif command_type == "get_song_file_path":
+                response["result"] = self._get_song_file_path()
             elif command_type == "get_track_info":
                 track_index = params.get("track_index", 0)
                 response["result"] = self._get_track_info(track_index)
@@ -371,6 +373,14 @@ class AbletonMCP(ControlSurface):
             self.log_message("Error getting session info: " + str(e))
             raise
     
+    def _get_song_file_path(self):
+        """Get the full file path of the current .als file"""
+        try:
+            return {"file_path": self._song.file_path}
+        except Exception as e:
+            self.log_message("Error getting song file path: " + str(e))
+            raise
+
     def _get_track_info(self, track_index):
         """Get information about a track"""
         try:
@@ -406,6 +416,7 @@ class AbletonMCP(ControlSurface):
                     "index": device_index,
                     "name": device.name,
                     "class_name": device.class_name,
+                    "class_display_name": device.class_display_name,
                     "type": self._get_device_type(device)
                 })
             
