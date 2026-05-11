@@ -72,6 +72,59 @@ A second, smaller gotcha: the protocol assumes the **whole response is one JSON 
 
 That's the project: ~2,000 lines of code total (~1,350 in the Remote Script, ~720 in the MCP server), one TCP socket between them, one careful threading rule, and a thin layer of async polling for the only long-running operation.
 
+## Tools reference
+
+All tools are defined in `MCP_Server/server.py` and decorated with `@mcp.tool()`.
+
+### Session / project info
+
+| Tool | Parameters | Description |
+|---|---|---|
+| `get_session_info` | — | Tempo, time signature, track count, and clip info for the whole Live set |
+| `get_song_file_path` | — | Path of the currently open `.als` file |
+| `get_track_info` | `track_index` | Name, type, devices, and clips for a single track |
+
+### Transport
+
+| Tool | Parameters | Description |
+|---|---|---|
+| `start_playback` | — | Press Play |
+| `stop_playback` | — | Press Stop |
+| `set_tempo` | `tempo` | Set BPM |
+
+### Tracks
+
+| Tool | Parameters | Description |
+|---|---|---|
+| `create_midi_track` | `index` (default `-1`) | Insert a new MIDI track; `-1` appends at the end |
+| `set_track_name` | `track_index`, `name` | Rename a track |
+
+### Clips
+
+| Tool | Parameters | Description |
+|---|---|---|
+| `create_clip` | `track_index`, `clip_index`, `length` (default `4.0`) | Create an empty MIDI clip in a session slot |
+| `add_notes_to_clip` | `track_index`, `clip_index`, `notes` | Write MIDI notes into a clip |
+| `set_clip_name` | `track_index`, `clip_index`, `name` | Rename a clip |
+| `fire_clip` | `track_index`, `clip_index` | Launch a clip |
+| `stop_clip` | `track_index`, `clip_index` | Stop a clip |
+
+### Browser / instruments
+
+| Tool | Parameters | Description |
+|---|---|---|
+| `get_browser_tree` | `category_type` (default `"all"`) | Browse the Live library tree (instruments, sounds, etc.) |
+| `get_browser_items_at_path` | `path` | List items at a specific browser path |
+| `load_instrument_or_effect` | `track_index`, `uri` | Load a device onto a track by its browser URI |
+| `load_drum_kit` | `track_index`, `rack_uri`, `kit_path` | Load a Drum Rack and a specific kit into it |
+
+### Stems
+
+| Tool | Parameters | Description |
+|---|---|---|
+| `create_stems` | `track_indices`, `output_dir`, `duration` | Solo-record each specified track to a separate WAV file (async — returns immediately) |
+| `get_stems_status` | — | Check progress of an in-flight stems recording |
+
 ## Python libraries used
 
 ### Third-party (declared in `pyproject.toml`)
