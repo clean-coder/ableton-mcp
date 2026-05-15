@@ -417,7 +417,8 @@ class AbletonMCP(ControlSurface):
                     "name": device.name,
                     "class_name": device.class_name,
                     "class_display_name": device.class_display_name,
-                    "type": self._get_device_type(device)
+                    "type": self._get_device_type(device),
+                    "is_active": device.is_active
                 })
             
             result = {
